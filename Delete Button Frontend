@@ -1,0 +1,268 @@
+function add_trash_alert_to_footer() {
+    ?>
+  <div id="custom-alert" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+    background: white; 
+    padding: 32px 40px; 
+    border-radius: 12px; 
+    box-shadow: 0 4px 24px rgba(0,0,0,0.12); 
+    z-index: 1000; 
+    min-width: 380px;
+	max-width: 550px;
+    font-family: Helvetica, Arial, sans-serif;">
+    <div style="text-align: center;">
+        <p style="margin-bottom: 24px; 
+            font-size: 16px; 
+            color: #1a1a1a; 
+            line-height: 1.5;
+            font-weight: 400;">Are you sure you want to delete this submission? This action cannot be undone and all associated data will be deleted.</p>
+        <div style="display: flex; 
+            justify-content: center; 
+            gap: 16px;">
+            <button id="confirm-delete" style="padding: 12px 30px; 
+                background: #dc3545; 
+                color: white; 
+                border: none; 
+                border-radius: 15px; 
+                cursor: pointer;
+                font-family: Helvetica, Arial, sans-serif;
+                font-size: 14px;
+                font-weight: 600;
+                transition: all 0.2s ease;
+                min-width: 150px;">
+                Yes
+            </button>
+            <button id="cancel-delete" style="padding: 12px 30px; 
+                background: #6c757d; 
+                color: white; 
+                border: none; 
+                border-radius: 15px; 
+                cursor: pointer;
+                font-family: Helvetica, Arial, sans-serif;
+                font-size: 14px;
+                font-weight: 600;
+                transition: all 0.2s ease;
+                min-width: 150px;">
+                No
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="overlay" style="display: none; 
+    position: fixed; 
+    top: 0; 
+    left: 0; 
+    width: 100%;
+    height: 100%; 
+    background: rgba(0,0,0,0.6); 
+    z-index: 999;
+    backdrop-filter: blur(2px);"></div>
+
+<style>
+#confirm-delete:hover {
+    background: #c82333 !important;
+    transform: translateY(-2px);
+}
+
+#cancel-delete:hover {
+    background: #5a6268 !important;
+    transform: translateY(-2px);
+}
+
+#custom-alert {
+    animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -48%);
+    }
+    to {
+        opacity: 1;
+        transform: translate(-50%, -50%);
+    }
+}
+</style>
+
+    <script>
+    jQuery(document).ready(function($) {
+        // Handle trash link click
+        $('.jet-listing-dynamic-link__link[href*="trash_post"]').on('click', function(e) {
+            e.preventDefault();
+            
+            // Get post ID from the closest container
+            let postId = $(this).closest('[data-post-id]').data('post-id');
+            if (!postId) {
+                // Fallback to get post ID from URL if data attribute not found
+                let href = $(this).attr('href');
+                let urlParams = new URLSearchParams(href.split('?')[1]);
+                postId = urlParams.get('post_id');
+            }
+            
+            if (!postId) {
+                console.error('Post ID not found');
+                return;
+            }
+            
+            // Store post ID for later use
+            $('#confirm-delete').data('post-id', postId);
+            
+            // Show alert
+            $('#custom-alert, #overlay').show();
+        });
+
+        // Handle cancel
+        $('#cancel-delete, #overlay').on('click', function() {
+            $('#custom-alert, #overlay').hide();
+        });
+
+        // Handle confirm
+        $('#confirm-delete').on('click', function() {
+            let postId = $(this).data('post-id');
+            const button = $(this);
+            
+            // Disable button to prevent double submission
+            button.prop('disabled', true);
+            
+            $.ajax({
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                type: 'POST',
+                data: {
+                    action: 'trash_post_action',
+                    post_id: postId,
+                    nonce: '<?php echo wp_create_nonce('trash_post_nonce'); ?>'
+                },
+                success: function(response) {
+                    $('#custom-alert, #overlay').hide();
+                    if (response.success) {
+                        if (response.data.credit_returned) {
+                            alert('Post deleted successfully.\n' + 
+                                  response.data.credit_returned + ' credits have been returned.\n' +
+                                  'New credit balance: ' + response.data.new_credit);
+                        }
+                        location.reload();
+                    } else {
+                        alert('Error: ' + response.data.message);
+                        button.prop('disabled', false);
+                    }
+                },
+                error: function() {
+                    $('#custom-alert, #overlay').hide();
+                    alert('Error occurred while processing your request');
+                    button.prop('disabled', false);
+                }
+            });
+        });
+    });
+    </script>
+    <?php
+}
+add_action('wp_footer', 'add_trash_alert_to_footer');
+
+
+
+function trash_post_link_shortcode($atts) {
+    $post_id = get_the_ID();
+    $post = get_post($post_id);
+    
+    // Get post publish time and current time
+    $publish_time = strtotime($post->post_date);
+    $current_time = current_time('timestamp');
+    
+    // Check if post is less than 5 minutes old
+    $time_difference = $current_time - $publish_time;
+    $minutes = $time_difference / 60;
+    
+    // Only return the trash link if post is less than 5 minutes old
+    if ($minutes <= 5) {
+        return "?action=trash_post&post_id=" . $post_id;
+    }
+    
+    // Return "Expired" if post is older than 5 minutes
+    return 'Expired';
+}
+add_shortcode('trash_post_link', 'trash_post_link_shortcode');
+
+
+
+
+// Handle the AJAX request with credit management
+function handle_trash_post_action() {
+    global $wpdb;
+    
+    if (!wp_verify_nonce($_POST['nonce'], 'trash_post_nonce')) {
+        wp_send_json_error(['message' => 'Invalid security token']);
+    }
+    
+    $post_id = intval($_POST['post_id']);
+    
+    if (!current_user_can('delete_post', $post_id)) {
+        wp_send_json_error(['message' => 'Permission denied']);
+    }
+
+    // Get post author (client) ID
+    $post = get_post($post_id);
+    $client_id = $post->post_author;
+
+    // Get credit information from custom table
+    $credit_info = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT credit_utilized, submission_type FROM {$wpdb->prefix}jet_cct_credit_management WHERE post_id = %d",
+            $post_id
+        )
+    );
+
+    if ($credit_info) {
+        // Map submission types to meta keys
+        $credit_meta_key = '';
+        switch($credit_info->submission_type) {
+            case 'Subject Evaluation':
+                $credit_meta_key = 'client_se_credit';
+                break;
+            case 'Client Monitoring':
+                $credit_meta_key = 'client_cm_credit';
+                break;
+            case 'Demand Letter':
+                $credit_meta_key = 'client_lod_credit';
+                break;
+            case 'Document Review':
+                $credit_meta_key = 'client_btdr_credit';
+                break;
+        }
+
+        if ($credit_meta_key) {
+            // Get current credit value and add back utilized credits
+            $current_credit = (int)get_user_meta($client_id, $credit_meta_key, true);
+            $new_credit = $current_credit + (int)$credit_info->credit_utilized;
+            
+            // Update user meta with new credit value
+            update_user_meta($client_id, $credit_meta_key, $new_credit);
+			
+			// Delete the record from the credit management table
+            $wpdb->delete(
+                $wpdb->prefix . 'jet_cct_credit_management',
+                ['post_id' => $post_id],
+                ['%d']
+            );
+        }
+    }
+
+    // Move post to trash
+    $result = wp_trash_post($post_id);
+    
+    if ($result) {
+        if ($credit_info && isset($new_credit)) {
+            wp_send_json_success([
+                'message' => 'Post moved to trash and credits updated',
+                'new_credit' => $new_credit,
+                'credit_returned' => $credit_info->credit_utilized
+            ]);
+        } else {
+            wp_send_json_success(['message' => 'Post moved to trash']);
+        }
+    } else {
+        wp_send_json_error(['message' => 'Failed to move post to trash']);
+    }
+}
+add_action('wp_ajax_trash_post_action', 'handle_trash_post_action');
